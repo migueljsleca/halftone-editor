@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "dialkit": "^1.0.0",
+    "motion": "^12.35.0"
+  }
+}
