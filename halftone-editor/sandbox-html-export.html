@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sandbox - HTML Export</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c1017;
+        --panel: rgba(12, 16, 23, 0.58);
+        --text: #f5f6fa;
+        --muted: #b4bfd6;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at 20% 20%, #1f2937, var(--bg) 58%);
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--text);
+      }
+
+      .layout {
+        min-height: 100vh;
+        display: grid;
+        grid-template-rows: auto 1fr;
+        gap: 12px;
+        padding: 20px;
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        align-items: center;
+        justify-content: space-between;
+        background: var(--panel);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 14px;
+        backdrop-filter: blur(12px);
+        padding: 12px 16px;
+      }
+
+      .meta h1 {
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.2;
+        letter-spacing: 0.01em;
+      }
+
+      .meta p {
+        margin: 0;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      [data-halftone-bg] {
+        border-radius: 18px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        overflow: hidden;
+        box-shadow: 0 26px 70px rgba(0, 0, 0, 0.42);
+        min-height: 65vh;
+        display: grid;
+        place-items: center;
+      }
+
+      .badge {
+        background: rgba(255, 255, 255, 0.82);
+        color: #0b1020;
+        border-radius: 999px;
+        padding: 10px 14px;
+        font-size: 13px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <header class="meta">
+        <div>
+          <h1>HTML + JS Export Sandbox</h1>
+          <p>Hover inside the preview to test interaction from the generated export.</p>
+        </div>
+      </header>
+      <main data-halftone-bg id="preview">
+        <div class="badge">Generated from halftone-export.js</div>
+      </main>
+    </div>
+
+    <script type="module" src="/exports/halftone-export.js"></script>
+  </body>
+</html>

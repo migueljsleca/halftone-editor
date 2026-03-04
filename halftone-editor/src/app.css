@@ -104,3 +104,224 @@ body {
   border-radius: 16px !important;
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65) !important;
 }
+
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner > .dialkit-folder {
+  grid-column: 1 / -1;
+}
+
+.dialkit-folder-root > .dialkit-folder-content > .dialkit-folder-inner > .dialkit-button {
+  width: 100%;
+}
+
+.export-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.58);
+  backdrop-filter: blur(8px);
+  z-index: 11000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.export-modal {
+  --export-surface: rgba(255, 255, 255, 0.04);
+  --export-surface-hover: rgba(255, 255, 255, 0.08);
+  --export-surface-active: rgba(255, 255, 255, 0.12);
+  --export-border: rgba(255, 255, 255, 0.15);
+  --export-text-root: #f9f9f9;
+  --export-text-label: rgba(255, 255, 255, 0.76);
+  --export-text-secondary: rgba(255, 255, 255, 0.72);
+  width: min(780px, calc(100vw - 36px));
+  max-height: min(92vh, 860px);
+  overflow-y: auto;
+  background: #060606;
+  border: 1px solid var(--export-border);
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.65);
+  padding: 20px;
+}
+
+.export-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.export-modal-header h2 {
+  margin: 0;
+  color: var(--export-text-root);
+  letter-spacing: -0.01em;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.export-close-button,
+.export-tab-button,
+.export-run-button {
+  border: none;
+  background: var(--export-surface);
+  color: var(--export-text-secondary);
+  font-family: inherit;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.export-close-button:hover,
+.export-tab-button:hover,
+.export-run-button:hover {
+  background: var(--export-surface-hover);
+  color: var(--export-text-root);
+}
+
+.export-close-button:active,
+.export-tab-button:active,
+.export-run-button:active {
+  background: var(--export-surface-active);
+}
+
+.export-close-button:disabled,
+.export-tab-button:disabled,
+.export-run-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.export-close-button {
+  height: 36px;
+  padding: 0 14px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.export-tab-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.export-tab-button {
+  height: 36px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.export-tab-button.is-active {
+  background: var(--export-surface-active);
+  color: var(--export-text-root);
+}
+
+.export-description {
+  color: var(--export-text-secondary);
+  font-size: 13px;
+  margin: 14px 0 16px;
+  line-height: 1.45;
+}
+
+.export-options-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.export-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.export-field span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--export-text-label);
+}
+
+.export-field input,
+.export-field select {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--export-border);
+  border-radius: 8px;
+  background: var(--export-surface);
+  color: var(--export-text-root);
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.export-field input:focus,
+.export-field select:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.export-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+  border: 1px solid var(--export-border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.015);
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.export-checkbox-grid label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--export-text-label);
+}
+
+.export-checkbox-grid input {
+  width: 16px;
+  height: 16px;
+  accent-color: #e9ecef;
+}
+
+.export-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.export-run-button {
+  min-width: 190px;
+  height: 40px;
+  color: var(--export-text-root);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.export-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--export-text-secondary);
+}
+
+@media (max-width: 760px) {
+  .export-modal {
+    width: calc(100vw - 20px);
+    padding: 14px;
+  }
+
+  .export-tab-grid,
+  .export-options-grid,
+  .export-checkbox-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .export-run-button {
+    width: 100%;
+  }
+}

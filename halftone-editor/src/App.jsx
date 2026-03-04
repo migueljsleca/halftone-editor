@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { DialRoot, DialStore, useDialKit } from 'dialkit';
+import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import 'dialkit/styles.css';
 
 const PANEL_NAME = 'Mono Halftone';
@@ -36,9 +37,13 @@ const COLOR_PRESETS = [
 
 const ACTION_PATHS = {
   uploadMedia: 'Media.uploadMedia',
-  resetAll: 'Actions.resetAll',
-  exportPng: 'Actions.exportPng',
-  resetView: 'Actions.resetView',
+  resetSettings: 'resetSettings',
+  exportPng: 'Export.png',
+  exportGif: 'Export.gif',
+  exportMp4: 'Export.mp4',
+  exportHtmlJsBg: 'Export.htmlJsBg',
+  exportReactComponent: 'Export.reactComponent',
+  resetView: 'resetView',
   matchPageToPaper: 'Style.matchPageToPaper'
 };
 
@@ -46,6 +51,42 @@ const VIEW_LIMITS = {
   minZoom: 0.25,
   maxZoom: 4
 };
+
+const EXPORT_TYPES = {
+  gif: 'gif',
+  mp4: 'mp4',
+  htmlJsBg: 'htmlJsBg',
+  reactComponent: 'reactComponent'
+};
+
+const EXPORT_TYPE_LABELS = {
+  [EXPORT_TYPES.gif]: 'GIF',
+  [EXPORT_TYPES.mp4]: 'MP4 Video',
+  [EXPORT_TYPES.htmlJsBg]: 'HTML + JS BG',
+  [EXPORT_TYPES.reactComponent]: 'React Component'
+};
+
+const EXPORT_TAB_ORDER = [
+  EXPORT_TYPES.htmlJsBg,
+  EXPORT_TYPES.reactComponent,
+  EXPORT_TYPES.gif,
+  EXPORT_TYPES.mp4
+];
+
+const EXPORT_RESOLUTION_OPTIONS = [
+  { value: 'source', label: 'Source' },
+  { value: '320', label: '320p' },
+  { value: '480', label: '480p' },
+  { value: '720', label: '720p' },
+  { value: '1080', label: '1080p' }
+];
+
+const VIDEO_QUALITY_BITRATES = {
+  low: 2_500_000,
+  medium: 5_000_000,
+  high: 9_000_000
+};
+
 const KEYBOARD_ZOOM_STEP = 1.1;
 
 function clamp(value, min, max) {
@@ -64,6 +105,38 @@ function isEditableTarget(target) {
     tagName === 'TEXTAREA' ||
     tagName === 'SELECT'
   );
+}
+
+function wait(durationMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, durationMs);
+  });
+}
+
+function sanitizeFileName(name, fallback = 'halftone-export') {
+  const trimmed = (name || '').trim().replace(/[\\/:*?"<>|]+/g, '-');
+  return trimmed || fallback;
+}
+
+function escapeTemplateLiteral(value) {
+  return value.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+}
+
+function getPreferredMimeType(candidates) {
+  if (typeof MediaRecorder === 'undefined' || typeof MediaRecorder.isTypeSupported !== 'function') {
+    return '';
+  }
+
+  return candidates.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || '';
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Failed to convert media to data URL.'));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function applyBoxBlur(cellValues, numRows, numCols, strength) {
@@ -438,6 +511,24 @@ function App() {
 
   const [hasSource, setHasSource] = useState(false);
   const [canvasSize, setCanvasSize] = useState(sourceSizeRef.current);
+  const [isExportModalOpen, setIsExportModalOpen] = useState(false);
+  const [activeExportType, setActiveExportType] = useState(EXPORT_TYPES.gif);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportStatusMessage, setExportStatusMessage] = useState('');
+  const [exportOptions, setExportOptions] = useState({
+    fileName: 'halftone-export',
+    durationSec: '2',
+    fps: '24',
+    resolution: '720',
+    videoQuality: 'high',
+    transparentBackground: true,
+    alphaMaskGradient: true,
+    pauseWhenOffscreen: true,
+    enableInteraction: true,
+    fadeIn: true,
+    adaptivePerformance: true,
+    splitHtmlJsFile: true
+  });
 
   const paintWhiteCanvas = useCallback((canvas) => {
     if (!canvas) {
@@ -637,27 +728,361 @@ function App() {
     [clearMedia, fitCanvas, paintWhiteCanvas, processFrame]
   );
 
+  const updateExportOption = useCallback((key, value) => {
+    setExportOptions((previous) => ({
+      ...previous,
+      [key]: value
+    }));
+  }, []);
+
+  const closeExportModal = useCallback(() => {
+    if (isExporting) {
+      return;
+    }
+    setIsExportModalOpen(false);
+  }, [isExporting]);
+
+  const openExportModal = useCallback((type) => {
+    setActiveExportType(type);
+    setExportStatusMessage('');
+    setIsExportModalOpen(true);
+  }, []);
+
+  const downloadBlob = useCallback((blob, fileName) => {
+    const blobUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = fileName;
+    link.click();
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 2_000);
+  }, []);
+
+  const downloadTextFile = useCallback(
+    (contents, fileName, mimeType = 'text/plain;charset=utf-8') => {
+      downloadBlob(new Blob([contents], { type: mimeType }), fileName);
+    },
+    [downloadBlob]
+  );
+
+  const getExportDimensions = useCallback((resolutionValue) => {
+    const previewCanvas = canvasRef.current;
+    const sourceWidth = Math.max(1, Math.round(sourceSizeRef.current.width || previewCanvas?.width || 1));
+    const sourceHeight = Math.max(1, Math.round(sourceSizeRef.current.height || previewCanvas?.height || 1));
+    const aspectRatio = sourceWidth / sourceHeight;
+
+    let targetWidth = sourceWidth;
+    let targetHeight = sourceHeight;
+
+    if (resolutionValue !== 'source') {
+      const requestedHeight = Math.max(120, Number.parseInt(resolutionValue, 10) || sourceHeight);
+      targetHeight = requestedHeight;
+      targetWidth = Math.max(1, Math.round(requestedHeight * aspectRatio));
+    }
+
+    const baseWidth = Math.max(1, previewCanvas?.width || sourceWidth);
+    const baseHeight = Math.max(1, previewCanvas?.height || sourceHeight);
+    const scaleFactor = Math.max(targetWidth / baseWidth, targetHeight / baseHeight, 1);
+
+    return {
+      targetWidth,
+      targetHeight,
+      scaleFactor
+    };
+  }, []);
+
+  const createSnapshotDataUrl = useCallback(
+    (resolutionValue) => {
+      const { targetWidth, targetHeight, scaleFactor } = getExportDimensions(resolutionValue);
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = targetWidth;
+      exportCanvas.height = targetHeight;
+      processFrame(scaleFactor, exportCanvas);
+      return { dataUrl: exportCanvas.toDataURL('image/png'), width: targetWidth, height: targetHeight };
+    },
+    [getExportDimensions, processFrame]
+  );
+
+  const getCurrentMediaPayload = useCallback(async () => {
+    const media = mediaRef.current;
+    const sourceElement = media.isVideo ? media.video : media.image;
+    if (!sourceElement) {
+      throw new Error('Load an image or video first.');
+    }
+
+    const mediaType = media.isVideo ? 'video' : 'image';
+    const sourceUrl =
+      mediaType === 'video'
+        ? media.video?.currentSrc || media.video?.src || ''
+        : media.image?.currentSrc || media.image?.src || '';
+
+    if (!sourceUrl) {
+      throw new Error('Unable to resolve media source for export.');
+    }
+
+    if (sourceUrl.startsWith('data:')) {
+      return { mediaType, dataUrl: sourceUrl };
+    }
+
+    const response = await fetch(sourceUrl);
+    if (!response.ok) {
+      throw new Error('Failed to fetch media source for export.');
+    }
+
+    const blob = await response.blob();
+    const dataUrl = await blobToDataUrl(blob);
+    return { mediaType, dataUrl };
+  }, []);
+
   const exportCurrentFrame = useCallback(() => {
-    if (!hasSource) {
+    if (!hasSource || !canvasRef.current) {
       return;
     }
 
-    const media = mediaRef.current;
-    const sourceElement = media.isVideo ? media.video : media.image;
+    const { targetWidth, targetHeight, scaleFactor } = getExportDimensions('source');
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = targetWidth;
+    exportCanvas.height = targetHeight;
+    processFrame(scaleFactor, exportCanvas);
 
-    if (!sourceElement || !canvasRef.current) {
-      return;
+    const exportName = sanitizeFileName(exportOptions.fileName, 'halftone-export');
+    exportCanvas.toBlob(
+      (blob) => {
+        if (!blob) {
+          setExportStatusMessage('PNG export failed.');
+          return;
+        }
+        downloadBlob(blob, `${exportName}.png`);
+      },
+      'image/png',
+      1
+    );
+  }, [downloadBlob, exportOptions.fileName, getExportDimensions, hasSource, processFrame]);
+
+  const exportGif = useCallback(async () => {
+    if (!hasSource || !canvasRef.current) {
+      throw new Error('Load an image or video first.');
+    }
+
+    const exportName = sanitizeFileName(exportOptions.fileName, 'halftone-export');
+    const fps = clamp(Number(exportOptions.fps) || 24, 1, 60);
+    const durationSec = clamp(Number(exportOptions.durationSec) || 2, 0.5, 30);
+    const frameDelay = Math.max(16, Math.round(1000 / fps));
+    const totalFrames = Math.max(1, Math.round(durationSec * fps));
+    const { targetWidth, targetHeight, scaleFactor } = getExportDimensions(exportOptions.resolution);
+
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = targetWidth;
+    exportCanvas.height = targetHeight;
+
+    const context = exportCanvas.getContext('2d', { willReadFrequently: true });
+    if (!context) {
+      throw new Error('GIF export failed: no 2D context.');
+    }
+
+    const gif = GIFEncoder();
+    for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
+      processFrame(scaleFactor, exportCanvas);
+      const frameImage = context.getImageData(0, 0, targetWidth, targetHeight);
+      const palette = quantize(frameImage.data, 256);
+      const indexedFrame = applyPalette(frameImage.data, palette);
+      const frameOptions = {
+        palette,
+        delay: frameDelay
+      };
+
+      if (frameIndex === 0) {
+        frameOptions.repeat = 0;
+      }
+
+      gif.writeFrame(indexedFrame, targetWidth, targetHeight, frameOptions);
+      await wait(frameDelay);
+    }
+
+    gif.finish();
+    downloadBlob(new Blob([gif.bytes()], { type: 'image/gif' }), `${exportName}.gif`);
+    return `Exported GIF (${targetWidth}x${targetHeight}, ${fps} FPS).`;
+  }, [downloadBlob, exportOptions, getExportDimensions, hasSource, processFrame]);
+
+  const exportMp4 = useCallback(async () => {
+    if (!hasSource || !canvasRef.current) {
+      throw new Error('Load an image or video first.');
+    }
+
+    if (typeof MediaRecorder === 'undefined') {
+      throw new Error('Video export is not available in this browser.');
+    }
+
+    const exportName = sanitizeFileName(exportOptions.fileName, 'halftone-export');
+    const fps = clamp(Number(exportOptions.fps) || 24, 1, 60);
+    const durationSec = clamp(Number(exportOptions.durationSec) || 2, 0.5, 30);
+    const totalFrames = Math.max(1, Math.round(durationSec * fps));
+    const frameDelay = Math.max(8, Math.round(1000 / fps));
+    const { targetWidth, targetHeight, scaleFactor } = getExportDimensions(exportOptions.resolution);
+    const qualityPreset = exportOptions.videoQuality in VIDEO_QUALITY_BITRATES ? exportOptions.videoQuality : 'medium';
+
+    const preferredMp4Type = getPreferredMimeType([
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4;codecs=h264',
+      'video/mp4'
+    ]);
+    const fallbackType = getPreferredMimeType(['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']);
+    const mimeType = preferredMp4Type || fallbackType;
+    if (!mimeType) {
+      throw new Error('No supported recorder codec was found in this browser.');
     }
 
     const exportCanvas = document.createElement('canvas');
-    processFrame(2, exportCanvas);
+    exportCanvas.width = targetWidth;
+    exportCanvas.height = targetHeight;
 
-    const dataUrl = exportCanvas.toDataURL('image/png');
-    const link = document.createElement('a');
-    link.href = dataUrl;
-    link.download = 'halftone.png';
-    link.click();
-  }, [hasSource, processFrame]);
+    const stream = exportCanvas.captureStream(fps);
+    const chunks = [];
+
+    let recorder;
+    try {
+      recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: VIDEO_QUALITY_BITRATES[qualityPreset]
+      });
+    } catch (error) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
+
+    const recordingFinished = new Promise((resolve, reject) => {
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
+      recorder.onstop = () => resolve();
+      recorder.onerror = () => reject(new Error('Recording failed.'));
+    });
+
+    recorder.start();
+    for (let frameIndex = 0; frameIndex < totalFrames; frameIndex += 1) {
+      processFrame(scaleFactor, exportCanvas);
+      await wait(frameDelay);
+    }
+    recorder.stop();
+    await recordingFinished;
+    stream.getTracks().forEach((track) => track.stop());
+
+    const isMp4 = mimeType.startsWith('video/mp4');
+    const extension = isMp4 ? 'mp4' : 'webm';
+    downloadBlob(new Blob(chunks, { type: mimeType }), `${exportName}.${extension}`);
+
+    return isMp4
+      ? `Exported MP4 (${targetWidth}x${targetHeight}, ${fps} FPS).`
+      : `MP4 is not available in this browser, exported WebM instead (${targetWidth}x${targetHeight}).`;
+  }, [downloadBlob, exportOptions, getExportDimensions, hasSource, processFrame]);
+
+  const exportHtmlJsBackground = useCallback(async () => {
+    if (!hasSource || !canvasRef.current) {
+      throw new Error('Load an image or video first.');
+    }
+
+    const exportName = sanitizeFileName(exportOptions.fileName, 'halftone-export');
+    const mediaPayload = await getCurrentMediaPayload();
+    const { targetWidth, targetHeight, scaleFactor } = getExportDimensions(exportOptions.resolution);
+    const settingsJson = JSON.stringify(settingsRef.current, null, 2);
+    const optionsJson = JSON.stringify(
+      {
+        transparentBackground: exportOptions.transparentBackground,
+        alphaMaskGradient: exportOptions.alphaMaskGradient,
+        pauseWhenOffscreen: exportOptions.pauseWhenOffscreen,
+        enableInteraction: exportOptions.enableInteraction,
+        fadeIn: exportOptions.fadeIn,
+        autoplay: true
+      },
+      null,
+      2
+    );
+
+    const runtimeCore = `function clamp(value, min, max) {\n  return Math.max(min, Math.min(max, value));\n}\n\nfunction applyBoxBlur(cellValues, numRows, numCols, strength) {\n  var result = new Float32Array(cellValues);\n  var passes = Math.floor(strength);\n\n  for (var pass = 0; pass < passes; pass += 1) {\n    var temp = new Float32Array(result.length);\n    for (var row = 0; row < numRows; row += 1) {\n      for (var col = 0; col < numCols; col += 1) {\n        var sum = 0;\n        var count = 0;\n        for (var dy = -1; dy <= 1; dy += 1) {\n          for (var dx = -1; dx <= 1; dx += 1) {\n            var sampleRow = row + dy;\n            var sampleCol = col + dx;\n            if (sampleRow >= 0 && sampleRow < numRows && sampleCol >= 0 && sampleCol < numCols) {\n              sum += result[sampleRow * numCols + sampleCol];\n              count += 1;\n            }\n          }\n        }\n        temp[row * numCols + col] = sum / count;\n      }\n    }\n    result = temp;\n  }\n\n  var fractional = strength - Math.floor(strength);\n  if (fractional > 0) {\n    for (var i = 0; i < result.length; i += 1) {\n      result[i] = cellValues[i] * (1 - fractional) + result[i] * fractional;\n    }\n  }\n\n  return result;\n}\n\nfunction applyFloydSteinbergDithering(cellValues, numRows, numCols) {\n  var threshold = 128;\n  for (var row = 0; row < numRows; row += 1) {\n    for (var col = 0; col < numCols; col += 1) {\n      var index = row * numCols + col;\n      var oldValue = cellValues[index];\n      var newValue = oldValue < threshold ? 0 : 255;\n      var error = oldValue - newValue;\n      cellValues[index] = newValue;\n      if (col + 1 < numCols) {\n        cellValues[row * numCols + (col + 1)] += error * (7 / 16);\n      }\n      if (row + 1 < numRows) {\n        if (col - 1 >= 0) {\n          cellValues[(row + 1) * numCols + (col - 1)] += error * (3 / 16);\n        }\n        cellValues[(row + 1) * numCols + col] += error * (5 / 16);\n        if (col + 1 < numCols) {\n          cellValues[(row + 1) * numCols + (col + 1)] += error * (1 / 16);\n        }\n      }\n    }\n  }\n}\n\nfunction applyOrderedDithering(cellValues, numRows, numCols) {\n  var bayerMatrix = [[0, 2], [3, 1]];\n  var matrixSize = 2;\n  for (var row = 0; row < numRows; row += 1) {\n    for (var col = 0; col < numCols; col += 1) {\n      var index = row * numCols + col;\n      var threshold = (bayerMatrix[row % matrixSize][col % matrixSize] + 0.5) * (255 / (matrixSize * matrixSize));\n      cellValues[index] = cellValues[index] < threshold ? 0 : 255;\n    }\n  }\n}\n\nfunction applyNoiseDithering(cellValues) {\n  var threshold = 128;\n  for (var index = 0; index < cellValues.length; index += 1) {\n    var noise = (Math.random() - 0.5) * 50;\n    var adjustedValue = cellValues[index] + noise;\n    cellValues[index] = adjustedValue < threshold ? 0 : 255;\n  }\n}\n\nfunction sampleGrayAt(grayData, width, height, x, y) {\n  var sampleX = clamp(Math.round(x), 0, width - 1);\n  var sampleY = clamp(Math.round(y), 0, height - 1);\n  return grayData[sampleY * width + sampleX];\n}\n\nfunction sampleRgbAt(data, width, height, x, y) {\n  var sampleX = clamp(Math.round(x), 0, width - 1);\n  var sampleY = clamp(Math.round(y), 0, height - 1);\n  var index = (sampleY * width + sampleX) * 4;\n  return [data[index], data[index + 1], data[index + 2]];\n}\n\nfunction pseudoRandom2d(x, y, seed) {\n  var raw = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453;\n  return raw - Math.floor(raw);\n}\n\nfunction drawHalftoneShape(context, shape, centerX, centerY, radius, color, angleRadians) {\n  context.fillStyle = color;\n  context.strokeStyle = color;\n  if (shape === 'Square') {\n    var side = radius * 2;\n    context.fillRect(centerX - side / 2, centerY - side / 2, side, side);\n    return;\n  }\n  if (shape === 'Diamond') {\n    var diamondSide = radius * Math.SQRT2;\n    context.beginPath();\n    context.moveTo(centerX, centerY - diamondSide);\n    context.lineTo(centerX + diamondSide, centerY);\n    context.lineTo(centerX, centerY + diamondSide);\n    context.lineTo(centerX - diamondSide, centerY);\n    context.closePath();\n    context.fill();\n    return;\n  }\n  if (shape === 'Triangle') {\n    var triangleRadius = radius * 1.25;\n    context.save();\n    context.translate(centerX, centerY);\n    context.rotate(angleRadians);\n    context.beginPath();\n    context.moveTo(0, -triangleRadius);\n    context.lineTo(triangleRadius * 0.9, triangleRadius * 0.75);\n    context.lineTo(-triangleRadius * 0.9, triangleRadius * 0.75);\n    context.closePath();\n    context.fill();\n    context.restore();\n    return;\n  }\n  if (shape === 'Line') {\n    var lineLength = radius * 2;\n    var lineThickness = Math.max(1, radius * 0.55);\n    context.save();\n    context.translate(centerX, centerY);\n    context.rotate(angleRadians);\n    context.beginPath();\n    context.lineWidth = lineThickness;\n    context.lineCap = 'round';\n    context.moveTo(-lineLength / 2, 0);\n    context.lineTo(lineLength / 2, 0);\n    context.stroke();\n    context.restore();\n    return;\n  }\n  context.beginPath();\n  context.arc(centerX, centerY, radius, 0, Math.PI * 2);\n  context.fill();\n}\n\nfunction renderHalftoneFrame(targetCanvas, sourceElement, settings, scaleFactor, options) {\n  var targetWidth = targetCanvas.width;\n  var targetHeight = targetCanvas.height;\n  var tempCanvas = document.createElement('canvas');\n  tempCanvas.width = targetWidth;\n  tempCanvas.height = targetHeight;\n  var tempContext = tempCanvas.getContext('2d', { willReadFrequently: true });\n  if (!tempContext) return;\n\n  var sourceWidth = sourceElement.videoWidth || sourceElement.naturalWidth || sourceElement.width || targetWidth;\n  var sourceHeight = sourceElement.videoHeight || sourceElement.naturalHeight || sourceElement.height || targetHeight;\n\n  if (sourceWidth > 0 && sourceHeight > 0) {\n    var sourceAspect = sourceWidth / sourceHeight;\n    var targetAspect = targetWidth / targetHeight;\n    var drawWidth = targetWidth;\n    var drawHeight = targetHeight;\n    var offsetX = 0;\n    var offsetY = 0;\n\n    if (sourceAspect > targetAspect) {\n      drawHeight = targetWidth / sourceAspect;\n      offsetY = (targetHeight - drawHeight) / 2;\n    } else if (sourceAspect < targetAspect) {\n      drawWidth = targetHeight * sourceAspect;\n      offsetX = (targetWidth - drawWidth) / 2;\n    }\n\n    tempContext.clearRect(0, 0, targetWidth, targetHeight);\n    tempContext.drawImage(sourceElement, offsetX, offsetY, drawWidth, drawHeight);\n  } else {\n    tempContext.drawImage(sourceElement, 0, 0, targetWidth, targetHeight);\n  }\n  var imageData = tempContext.getImageData(0, 0, targetWidth, targetHeight);\n  var data = imageData.data;\n  var contrastAdjustment = clamp(settings.contrast, -255, 255);\n  var contrastFactor = (259 * (contrastAdjustment + 255)) / (255 * (259 - contrastAdjustment));\n  var grayData = new Float32Array(targetWidth * targetHeight);\n\n  for (var index = 0; index < data.length; index += 4) {\n    var gray = 0.299 * data[index] + 0.587 * data[index + 1] + 0.114 * data[index + 2];\n    gray = contrastFactor * (gray - 128) + 128 + 20;\n    gray = clamp(gray, 0, 255);\n    grayData[index / 4] = gray;\n  }\n\n  var grid = Math.max(1, Math.round(settings.dotSize * scaleFactor));\n  var angleRadians = (settings.angle * Math.PI) / 180;\n  var isAxisAligned = Math.abs(settings.angle) < 0.001;\n  var numCols;\n  var numRows;\n  var cellValues;\n  var posX;\n  var posY;\n  var cellColors;\n\n  if (isAxisAligned) {\n    numCols = Math.ceil(targetWidth / grid);\n    numRows = Math.ceil(targetHeight / grid);\n    cellValues = new Float32Array(numRows * numCols);\n    posX = new Float32Array(numRows * numCols);\n    posY = new Float32Array(numRows * numCols);\n    cellColors = new Uint8ClampedArray(numRows * numCols * 3);\n\n    for (var row = 0; row < numRows; row += 1) {\n      for (var col = 0; col < numCols; col += 1) {\n        var idx = row * numCols + col;\n        var sum = 0;\n        var count = 0;\n        var startY = row * grid;\n        var startX = col * grid;\n        var endY = Math.min(startY + grid, targetHeight);\n        var endX = Math.min(startX + grid, targetWidth);\n\n        for (var y = startY; y < endY; y += 1) {\n          for (var x = startX; x < endX; x += 1) {\n            sum += grayData[y * targetWidth + x];\n            count += 1;\n          }\n        }\n\n        cellValues[idx] = count > 0 ? sum / count : 0;\n        posX[idx] = col * grid + grid / 2;\n        posY[idx] = row * grid + grid / 2;\n\n        if (settings.colorMode) {\n          var rgb = sampleRgbAt(data, targetWidth, targetHeight, posX[idx], posY[idx]);\n          var colorIndex = idx * 3;\n          cellColors[colorIndex] = rgb[0];\n          cellColors[colorIndex + 1] = rgb[1];\n          cellColors[colorIndex + 2] = rgb[2];\n        }\n      }\n    }\n  } else {\n    var diagonal = Math.ceil(Math.sqrt(targetWidth * targetWidth + targetHeight * targetHeight));\n    numCols = Math.ceil(diagonal / grid) + 2;\n    numRows = Math.ceil(diagonal / grid) + 2;\n    var halfCols = numCols / 2;\n    var halfRows = numRows / 2;\n    var cosAngle = Math.cos(angleRadians);\n    var sinAngle = Math.sin(angleRadians);\n    var centerX = targetWidth / 2;\n    var centerY = targetHeight / 2;\n\n    cellValues = new Float32Array(numRows * numCols);\n    posX = new Float32Array(numRows * numCols);\n    posY = new Float32Array(numRows * numCols);\n    cellColors = new Uint8ClampedArray(numRows * numCols * 3);\n\n    for (var r = 0; r < numRows; r += 1) {\n      for (var c = 0; c < numCols; c += 1) {\n        var index2 = r * numCols + c;\n        var localX = (c - halfCols + 0.5) * grid;\n        var localY = (r - halfRows + 0.5) * grid;\n        var rotatedX = centerX + localX * cosAngle - localY * sinAngle;\n        var rotatedY = centerY + localX * sinAngle + localY * cosAngle;\n\n        posX[index2] = rotatedX;\n        posY[index2] = rotatedY;\n        cellValues[index2] = sampleGrayAt(grayData, targetWidth, targetHeight, rotatedX, rotatedY);\n\n        if (settings.colorMode) {\n          var rgb2 = sampleRgbAt(data, targetWidth, targetHeight, rotatedX, rotatedY);\n          var colorIndex2 = index2 * 3;\n          cellColors[colorIndex2] = rgb2[0];\n          cellColors[colorIndex2 + 1] = rgb2[1];\n          cellColors[colorIndex2 + 2] = rgb2[2];\n        }\n      }\n    }\n  }\n\n  if (settings.smoothing > 0) {\n    cellValues = applyBoxBlur(cellValues, numRows, numCols, settings.smoothing);\n  }\n  if (settings.ditherType === 'FloydSteinberg') {\n    applyFloydSteinbergDithering(cellValues, numRows, numCols);\n  } else if (settings.ditherType === 'Ordered') {\n    applyOrderedDithering(cellValues, numRows, numCols);\n  } else if (settings.ditherType === 'Noise') {\n    applyNoiseDithering(cellValues);\n  }\n\n  var context = targetCanvas.getContext('2d');\n  if (!context) return;\n\n  if (options.transparentBackground) {\n    context.clearRect(0, 0, targetWidth, targetHeight);\n  } else {\n    context.fillStyle = settings.paperColor;\n    context.fillRect(0, 0, targetWidth, targetHeight);\n  }\n\n  var maxRadius = grid / 2;\n  var spreadRadius = (settings.spread / 100) * grid * 0.8;\n\n  for (var row2 = 0; row2 < numRows; row2 += 1) {\n    for (var col2 = 0; col2 < numCols; col2 += 1) {\n      var idx2 = row2 * numCols + col2;\n      var brightnessValue = clamp(cellValues[idx2], 0, 255);\n      var normalized = brightnessValue / 255;\n      var tone = settings.inverted ? normalized : 1 - normalized;\n      var radius = maxRadius * tone;\n      if (radius <= 0.45) continue;\n\n      var dotX = posX[idx2];\n      var dotY = posY[idx2];\n      if (spreadRadius > 0) {\n        var randomX = pseudoRandom2d(col2 + 13, row2 + 29, 17);\n        var randomY = pseudoRandom2d(col2 + 41, row2 + 7, 91);\n        dotX += (randomX - 0.5) * spreadRadius * 2;\n        dotY += (randomY - 0.5) * spreadRadius * 2;\n      }\n\n      if (dotX < -grid || dotX > targetWidth + grid || dotY < -grid || dotY > targetHeight + grid) {\n        continue;\n      }\n\n      var dotColor = settings.colorMode\n        ? 'rgb(' + cellColors[idx2 * 3] + ' ' + cellColors[idx2 * 3 + 1] + ' ' + cellColors[idx2 * 3 + 2] + ')'\n        : settings.inkColor;\n\n      drawHalftoneShape(context, settings.shape, dotX, dotY, radius, dotColor, angleRadians);\n    }\n  }\n}\n\nfunction createMediaSource(type, src) {\n  return new Promise(function(resolve, reject) {\n    if (type === 'video') {\n      var video = document.createElement('video');\n      video.crossOrigin = 'anonymous';\n      video.loop = true;\n      video.muted = true;\n      video.playsInline = true;\n      video.setAttribute('webkit-playsinline', 'true');\n      video.addEventListener('loadeddata', function() { resolve(video); }, { once: true });\n      video.addEventListener('error', function() { reject(new Error('Failed to load video source.')); }, { once: true });\n      video.src = src;\n      video.load();\n      return;\n    }\n\n    var image = new Image();\n    image.crossOrigin = 'anonymous';\n    image.addEventListener('load', function() { resolve(image); }, { once: true });\n    image.addEventListener('error', function() { reject(new Error('Failed to load image source.')); }, { once: true });\n    image.src = src;\n  });\n}\n\nasync function mountHalftoneRuntime(host, config) {\n  var media = config.media;\n  var settings = config.settings;\n  var options = config.options;\n  var render = config.render;\n\n  host.style.position = host.style.position || 'relative';\n  host.style.overflow = host.style.overflow || 'hidden';\n\n  var canvas = document.createElement('canvas');\n  canvas.width = Math.max(1, Math.round(render.width));\n  canvas.height = Math.max(1, Math.round(render.height));\n  canvas.style.width = '100%';\n  canvas.style.height = '100%';\n  canvas.style.objectFit = 'contain';\n  canvas.style.display = 'block';\n  canvas.style.willChange = 'transform, opacity';\n  canvas.style.opacity = options.fadeIn ? '0' : '1';\n\n  host.replaceChildren(canvas);\n\n  var source = await createMediaSource(media.type, media.src);\n  if (options.fadeIn) {\n    requestAnimationFrame(function() {\n      canvas.style.transition = 'opacity 420ms ease';\n      canvas.style.opacity = '1';\n    });\n  }\n\n  var running = true;\n  var raf = 0;\n  var pointerActive = false;\n  var visible = true;\n  var renderedImage = false;\n\n  if (media.type === 'video' && options.autoplay !== false) {\n    source.play().catch(function() {});\n  }\n\n  var draw = function() {\n    if (!running) return;\n\n    if (media.type === 'video') {\n      if (!options.pauseWhenOffscreen || visible) {\n        renderHalftoneFrame(canvas, source, settings, render.scaleFactor, options);\n      }\n      if (options.autoplay !== false) {\n        raf = requestAnimationFrame(draw);\n      }\n    } else if (!renderedImage) {\n      renderHalftoneFrame(canvas, source, settings, render.scaleFactor, options);\n      renderedImage = true;\n    }\n  };\n\n  draw();\n\n  var observer = null;\n  if (options.pauseWhenOffscreen && typeof IntersectionObserver !== 'undefined') {\n    observer = new IntersectionObserver(function(entries) {\n      visible = entries.some(function(entry) { return entry.isIntersecting; });\n      if (media.type === 'video' && options.autoplay !== false) {\n        if (visible) {\n          source.play().catch(function() {});\n        } else {\n          source.pause();\n        }\n      }\n    });\n    observer.observe(host);\n  }\n\n  var handlePointerMove = function(event) {\n    if (!options.enableInteraction) return;\n    pointerActive = true;\n    var bounds = canvas.getBoundingClientRect();\n    var nx = (event.clientX - bounds.left) / bounds.width - 0.5;\n    var ny = (event.clientY - bounds.top) / bounds.height - 0.5;\n    canvas.style.transform = 'scale(1.01) translate(' + (nx * 8).toFixed(2) + 'px, ' + (ny * 8).toFixed(2) + 'px)';\n  };\n\n  var handlePointerLeave = function() {\n    pointerActive = false;\n    canvas.style.transform = 'none';\n  };\n\n  if (options.enableInteraction) {\n    canvas.addEventListener('pointermove', handlePointerMove);\n    canvas.addEventListener('pointerleave', handlePointerLeave);\n  }\n\n  return function cleanup() {\n    running = false;\n    if (raf) {\n      cancelAnimationFrame(raf);\n    }\n    if (observer) {\n      observer.disconnect();\n    }\n    if (options.enableInteraction) {\n      canvas.removeEventListener('pointermove', handlePointerMove);\n      canvas.removeEventListener('pointerleave', handlePointerLeave);\n    }\n    if (media.type === 'video') {\n      source.pause();\n      source.src = '';\n      source.load();\n    }\n    host.replaceChildren();\n  };\n}\n`;
+
+    const jsContents = `const halftoneEmbeddedMedia = {\n  type: '${mediaPayload.mediaType}',\n  src: \`${escapeTemplateLiteral(mediaPayload.dataUrl)}\`\n};\nconst halftoneSettings = ${settingsJson};\nconst halftoneDefaults = ${optionsJson};\nconst halftoneRender = {\n  width: ${targetWidth},\n  height: ${targetHeight},\n  scaleFactor: ${scaleFactor}\n};\n\n${runtimeCore}\n\nexport async function mountHalftoneBackground(target, overrides = {}) {\n  const element = target || document.querySelector('[data-halftone-bg]');\n  if (!element) return () => {};\n\n  const runtimeOptions = { ...halftoneDefaults, ...overrides };\n  const runtimeMedia = {\n    type: overrides.mediaType || halftoneEmbeddedMedia.type,\n    src: overrides.mediaSrc || halftoneEmbeddedMedia.src\n  };\n\n  delete runtimeOptions.mediaType;\n  delete runtimeOptions.mediaSrc;\n\n  return mountHalftoneRuntime(element, {\n    media: runtimeMedia,\n    settings: halftoneSettings,\n    options: runtimeOptions,\n    render: {\n      width: runtimeOptions.width || halftoneRender.width,\n      height: runtimeOptions.height || halftoneRender.height,\n      scaleFactor: runtimeOptions.scaleFactor || halftoneRender.scaleFactor\n    }\n  });\n}\n\nif (typeof window !== 'undefined') {\n  mountHalftoneBackground().catch((error) => {\n    console.error('[Halftone Export]', error);\n  });\n}\n`;
+
+    const htmlWithExternalScript = `<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Halftone Background</title>\n    <style>\n      html, body { margin: 0; width: 100%; height: 100%; }\n      [data-halftone-bg] { width: 100%; height: 100%; }\n    </style>\n  </head>\n  <body>\n    <div data-halftone-bg></div>\n    <script type=\"module\" src=\"./${exportName}.js\"></script>\n  </body>\n</html>\n`;
+
+    if (exportOptions.splitHtmlJsFile) {
+      downloadTextFile(htmlWithExternalScript, `${exportName}.html`, 'text/html;charset=utf-8');
+      downloadTextFile(jsContents, `${exportName}.js`, 'application/javascript;charset=utf-8');
+      return 'Exported realtime HTML and JS halftone files.';
+    }
+
+    const htmlInline = `<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"UTF-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\" />\n    <title>Halftone Background</title>\n    <style>\n      html, body { margin: 0; width: 100%; height: 100%; }\n      [data-halftone-bg] { width: 100%; height: 100%; }\n    </style>\n  </head>\n  <body>\n    <div data-halftone-bg></div>\n    <script type=\"module\">\n${jsContents}\n    </script>\n  </body>\n</html>\n`;
+
+    downloadTextFile(htmlInline, `${exportName}.html`, 'text/html;charset=utf-8');
+    return 'Exported realtime HTML halftone file.';
+  }, [downloadTextFile, exportOptions, getCurrentMediaPayload, getExportDimensions, hasSource]);
+
+  const exportReactComponent = useCallback(async () => {
+    if (!hasSource || !canvasRef.current) {
+      throw new Error('Load an image or video first.');
+    }
+
+    const exportName = sanitizeFileName(exportOptions.fileName, 'halftone-export');
+    const mediaPayload = await getCurrentMediaPayload();
+    const { targetWidth, targetHeight, scaleFactor } = getExportDimensions(exportOptions.resolution);
+    const settingsJson = JSON.stringify(settingsRef.current, null, 2);
+    const componentName =
+      sanitizeFileName(exportName, 'HalftoneBackground')
+        .replace(/[^A-Za-z0-9]+/g, ' ')
+        .split(' ')
+        .filter(Boolean)
+        .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+        .join('') || 'HalftoneBackground';
+
+    const runtimeOptionsJson = JSON.stringify(
+      {
+        transparentBackground: exportOptions.transparentBackground,
+        alphaMaskGradient: exportOptions.alphaMaskGradient,
+        pauseWhenOffscreen: exportOptions.pauseWhenOffscreen,
+        enableInteraction: exportOptions.enableInteraction,
+        fadeIn: exportOptions.fadeIn,
+        autoplay: true
+      },
+      null,
+      2
+    );
+
+    const runtimeCore = `function clamp(value, min, max) {\n  return Math.max(min, Math.min(max, value));\n}\n\nfunction applyBoxBlur(cellValues, numRows, numCols, strength) {\n  var result = new Float32Array(cellValues);\n  var passes = Math.floor(strength);\n  for (var pass = 0; pass < passes; pass += 1) {\n    var temp = new Float32Array(result.length);\n    for (var row = 0; row < numRows; row += 1) {\n      for (var col = 0; col < numCols; col += 1) {\n        var sum = 0;\n        var count = 0;\n        for (var dy = -1; dy <= 1; dy += 1) {\n          for (var dx = -1; dx <= 1; dx += 1) {\n            var sampleRow = row + dy;\n            var sampleCol = col + dx;\n            if (sampleRow >= 0 && sampleRow < numRows && sampleCol >= 0 && sampleCol < numCols) {\n              sum += result[sampleRow * numCols + sampleCol];\n              count += 1;\n            }\n          }\n        }\n        temp[row * numCols + col] = sum / count;\n      }\n    }\n    result = temp;\n  }\n  var fractional = strength - Math.floor(strength);\n  if (fractional > 0) {\n    for (var i = 0; i < result.length; i += 1) {\n      result[i] = cellValues[i] * (1 - fractional) + result[i] * fractional;\n    }\n  }\n  return result;\n}\n\nfunction applyFloydSteinbergDithering(cellValues, numRows, numCols) {\n  var threshold = 128;\n  for (var row = 0; row < numRows; row += 1) {\n    for (var col = 0; col < numCols; col += 1) {\n      var index = row * numCols + col;\n      var oldValue = cellValues[index];\n      var newValue = oldValue < threshold ? 0 : 255;\n      var error = oldValue - newValue;\n      cellValues[index] = newValue;\n      if (col + 1 < numCols) {\n        cellValues[row * numCols + (col + 1)] += error * (7 / 16);\n      }\n      if (row + 1 < numRows) {\n        if (col - 1 >= 0) {\n          cellValues[(row + 1) * numCols + (col - 1)] += error * (3 / 16);\n        }\n        cellValues[(row + 1) * numCols + col] += error * (5 / 16);\n        if (col + 1 < numCols) {\n          cellValues[(row + 1) * numCols + (col + 1)] += error * (1 / 16);\n        }\n      }\n    }\n  }\n}\n\nfunction applyOrderedDithering(cellValues, numRows, numCols) {\n  var bayerMatrix = [[0, 2], [3, 1]];\n  var matrixSize = 2;\n  for (var row = 0; row < numRows; row += 1) {\n    for (var col = 0; col < numCols; col += 1) {\n      var index = row * numCols + col;\n      var threshold = (bayerMatrix[row % matrixSize][col % matrixSize] + 0.5) * (255 / (matrixSize * matrixSize));\n      cellValues[index] = cellValues[index] < threshold ? 0 : 255;\n    }\n  }\n}\n\nfunction applyNoiseDithering(cellValues) {\n  var threshold = 128;\n  for (var index = 0; index < cellValues.length; index += 1) {\n    var noise = (Math.random() - 0.5) * 50;\n    var adjustedValue = cellValues[index] + noise;\n    cellValues[index] = adjustedValue < threshold ? 0 : 255;\n  }\n}\n\nfunction sampleGrayAt(grayData, width, height, x, y) {\n  var sampleX = clamp(Math.round(x), 0, width - 1);\n  var sampleY = clamp(Math.round(y), 0, height - 1);\n  return grayData[sampleY * width + sampleX];\n}\n\nfunction sampleRgbAt(data, width, height, x, y) {\n  var sampleX = clamp(Math.round(x), 0, width - 1);\n  var sampleY = clamp(Math.round(y), 0, height - 1);\n  var index = (sampleY * width + sampleX) * 4;\n  return [data[index], data[index + 1], data[index + 2]];\n}\n\nfunction pseudoRandom2d(x, y, seed) {\n  var raw = Math.sin(x * 127.1 + y * 311.7 + seed * 74.7) * 43758.5453;\n  return raw - Math.floor(raw);\n}\n\nfunction drawHalftoneShape(context, shape, centerX, centerY, radius, color, angleRadians) {\n  context.fillStyle = color;\n  context.strokeStyle = color;\n  if (shape === 'Square') {\n    var side = radius * 2;\n    context.fillRect(centerX - side / 2, centerY - side / 2, side, side);\n    return;\n  }\n  if (shape === 'Diamond') {\n    var diamondSide = radius * Math.SQRT2;\n    context.beginPath();\n    context.moveTo(centerX, centerY - diamondSide);\n    context.lineTo(centerX + diamondSide, centerY);\n    context.lineTo(centerX, centerY + diamondSide);\n    context.lineTo(centerX - diamondSide, centerY);\n    context.closePath();\n    context.fill();\n    return;\n  }\n  if (shape === 'Triangle') {\n    var triangleRadius = radius * 1.25;\n    context.save();\n    context.translate(centerX, centerY);\n    context.rotate(angleRadians);\n    context.beginPath();\n    context.moveTo(0, -triangleRadius);\n    context.lineTo(triangleRadius * 0.9, triangleRadius * 0.75);\n    context.lineTo(-triangleRadius * 0.9, triangleRadius * 0.75);\n    context.closePath();\n    context.fill();\n    context.restore();\n    return;\n  }\n  if (shape === 'Line') {\n    var lineLength = radius * 2;\n    var lineThickness = Math.max(1, radius * 0.55);\n    context.save();\n    context.translate(centerX, centerY);\n    context.rotate(angleRadians);\n    context.beginPath();\n    context.lineWidth = lineThickness;\n    context.lineCap = 'round';\n    context.moveTo(-lineLength / 2, 0);\n    context.lineTo(lineLength / 2, 0);\n    context.stroke();\n    context.restore();\n    return;\n  }\n  context.beginPath();\n  context.arc(centerX, centerY, radius, 0, Math.PI * 2);\n  context.fill();\n}\n\nfunction renderHalftoneFrame(targetCanvas, sourceElement, settings, scaleFactor, options) {\n  var targetWidth = targetCanvas.width;\n  var targetHeight = targetCanvas.height;\n  var tempCanvas = document.createElement('canvas');\n  tempCanvas.width = targetWidth;\n  tempCanvas.height = targetHeight;\n  var tempContext = tempCanvas.getContext('2d', { willReadFrequently: true });\n  if (!tempContext) return;\n\n  var sourceWidth = sourceElement.videoWidth || sourceElement.naturalWidth || sourceElement.width || targetWidth;\n  var sourceHeight = sourceElement.videoHeight || sourceElement.naturalHeight || sourceElement.height || targetHeight;\n\n  if (sourceWidth > 0 && sourceHeight > 0) {\n    var sourceAspect = sourceWidth / sourceHeight;\n    var targetAspect = targetWidth / targetHeight;\n    var drawWidth = targetWidth;\n    var drawHeight = targetHeight;\n    var offsetX = 0;\n    var offsetY = 0;\n\n    if (sourceAspect > targetAspect) {\n      drawHeight = targetWidth / sourceAspect;\n      offsetY = (targetHeight - drawHeight) / 2;\n    } else if (sourceAspect < targetAspect) {\n      drawWidth = targetHeight * sourceAspect;\n      offsetX = (targetWidth - drawWidth) / 2;\n    }\n\n    tempContext.clearRect(0, 0, targetWidth, targetHeight);\n    tempContext.drawImage(sourceElement, offsetX, offsetY, drawWidth, drawHeight);\n  } else {\n    tempContext.drawImage(sourceElement, 0, 0, targetWidth, targetHeight);\n  }\n  var imageData = tempContext.getImageData(0, 0, targetWidth, targetHeight);\n  var data = imageData.data;\n  var contrastAdjustment = clamp(settings.contrast, -255, 255);\n  var contrastFactor = (259 * (contrastAdjustment + 255)) / (255 * (259 - contrastAdjustment));\n  var grayData = new Float32Array(targetWidth * targetHeight);\n\n  for (var index = 0; index < data.length; index += 4) {\n    var gray = 0.299 * data[index] + 0.587 * data[index + 1] + 0.114 * data[index + 2];\n    gray = contrastFactor * (gray - 128) + 128 + 20;\n    gray = clamp(gray, 0, 255);\n    grayData[index / 4] = gray;\n  }\n\n  var grid = Math.max(1, Math.round(settings.dotSize * scaleFactor));\n  var angleRadians = (settings.angle * Math.PI) / 180;\n  var isAxisAligned = Math.abs(settings.angle) < 0.001;\n  var numCols;\n  var numRows;\n  var cellValues;\n  var posX;\n  var posY;\n  var cellColors;\n\n  if (isAxisAligned) {\n    numCols = Math.ceil(targetWidth / grid);\n    numRows = Math.ceil(targetHeight / grid);\n    cellValues = new Float32Array(numRows * numCols);\n    posX = new Float32Array(numRows * numCols);\n    posY = new Float32Array(numRows * numCols);\n    cellColors = new Uint8ClampedArray(numRows * numCols * 3);\n\n    for (var row = 0; row < numRows; row += 1) {\n      for (var col = 0; col < numCols; col += 1) {\n        var idx = row * numCols + col;\n        var sum = 0;\n        var count = 0;\n        var startY = row * grid;\n        var startX = col * grid;\n        var endY = Math.min(startY + grid, targetHeight);\n        var endX = Math.min(startX + grid, targetWidth);\n\n        for (var y = startY; y < endY; y += 1) {\n          for (var x = startX; x < endX; x += 1) {\n            sum += grayData[y * targetWidth + x];\n            count += 1;\n          }\n        }\n\n        cellValues[idx] = count > 0 ? sum / count : 0;\n        posX[idx] = col * grid + grid / 2;\n        posY[idx] = row * grid + grid / 2;\n\n        if (settings.colorMode) {\n          var rgb = sampleRgbAt(data, targetWidth, targetHeight, posX[idx], posY[idx]);\n          var colorIndex = idx * 3;\n          cellColors[colorIndex] = rgb[0];\n          cellColors[colorIndex + 1] = rgb[1];\n          cellColors[colorIndex + 2] = rgb[2];\n        }\n      }\n    }\n  } else {\n    var diagonal = Math.ceil(Math.sqrt(targetWidth * targetWidth + targetHeight * targetHeight));\n    numCols = Math.ceil(diagonal / grid) + 2;\n    numRows = Math.ceil(diagonal / grid) + 2;\n    var halfCols = numCols / 2;\n    var halfRows = numRows / 2;\n    var cosAngle = Math.cos(angleRadians);\n    var sinAngle = Math.sin(angleRadians);\n    var centerX = targetWidth / 2;\n    var centerY = targetHeight / 2;\n\n    cellValues = new Float32Array(numRows * numCols);\n    posX = new Float32Array(numRows * numCols);\n    posY = new Float32Array(numRows * numCols);\n    cellColors = new Uint8ClampedArray(numRows * numCols * 3);\n\n    for (var r = 0; r < numRows; r += 1) {\n      for (var c = 0; c < numCols; c += 1) {\n        var index2 = r * numCols + c;\n        var localX = (c - halfCols + 0.5) * grid;\n        var localY = (r - halfRows + 0.5) * grid;\n        var rotatedX = centerX + localX * cosAngle - localY * sinAngle;\n        var rotatedY = centerY + localX * sinAngle + localY * cosAngle;\n\n        posX[index2] = rotatedX;\n        posY[index2] = rotatedY;\n        cellValues[index2] = sampleGrayAt(grayData, targetWidth, targetHeight, rotatedX, rotatedY);\n\n        if (settings.colorMode) {\n          var rgb2 = sampleRgbAt(data, targetWidth, targetHeight, rotatedX, rotatedY);\n          var colorIndex2 = index2 * 3;\n          cellColors[colorIndex2] = rgb2[0];\n          cellColors[colorIndex2 + 1] = rgb2[1];\n          cellColors[colorIndex2 + 2] = rgb2[2];\n        }\n      }\n    }\n  }\n\n  if (settings.smoothing > 0) {\n    cellValues = applyBoxBlur(cellValues, numRows, numCols, settings.smoothing);\n  }\n  if (settings.ditherType === 'FloydSteinberg') {\n    applyFloydSteinbergDithering(cellValues, numRows, numCols);\n  } else if (settings.ditherType === 'Ordered') {\n    applyOrderedDithering(cellValues, numRows, numCols);\n  } else if (settings.ditherType === 'Noise') {\n    applyNoiseDithering(cellValues);\n  }\n\n  var context = targetCanvas.getContext('2d');\n  if (!context) return;\n\n  if (options.transparentBackground) {\n    context.clearRect(0, 0, targetWidth, targetHeight);\n  } else {\n    context.fillStyle = settings.paperColor;\n    context.fillRect(0, 0, targetWidth, targetHeight);\n  }\n\n  var maxRadius = grid / 2;\n  var spreadRadius = (settings.spread / 100) * grid * 0.8;\n\n  for (var row2 = 0; row2 < numRows; row2 += 1) {\n    for (var col2 = 0; col2 < numCols; col2 += 1) {\n      var idx2 = row2 * numCols + col2;\n      var brightnessValue = clamp(cellValues[idx2], 0, 255);\n      var normalized = brightnessValue / 255;\n      var tone = settings.inverted ? normalized : 1 - normalized;\n      var radius = maxRadius * tone;\n      if (radius <= 0.45) continue;\n\n      var dotX = posX[idx2];\n      var dotY = posY[idx2];\n      if (spreadRadius > 0) {\n        var randomX = pseudoRandom2d(col2 + 13, row2 + 29, 17);\n        var randomY = pseudoRandom2d(col2 + 41, row2 + 7, 91);\n        dotX += (randomX - 0.5) * spreadRadius * 2;\n        dotY += (randomY - 0.5) * spreadRadius * 2;\n      }\n\n      if (dotX < -grid || dotX > targetWidth + grid || dotY < -grid || dotY > targetHeight + grid) {\n        continue;\n      }\n\n      var dotColor = settings.colorMode\n        ? 'rgb(' + cellColors[idx2 * 3] + ' ' + cellColors[idx2 * 3 + 1] + ' ' + cellColors[idx2 * 3 + 2] + ')'\n        : settings.inkColor;\n\n      drawHalftoneShape(context, settings.shape, dotX, dotY, radius, dotColor, angleRadians);\n    }\n  }\n}\n\nfunction createMediaSource(type, src) {\n  return new Promise(function(resolve, reject) {\n    if (type === 'video') {\n      var video = document.createElement('video');\n      video.crossOrigin = 'anonymous';\n      video.loop = true;\n      video.muted = true;\n      video.playsInline = true;\n      video.setAttribute('webkit-playsinline', 'true');\n      video.addEventListener('loadeddata', function() { resolve(video); }, { once: true });\n      video.addEventListener('error', function() { reject(new Error('Failed to load video source.')); }, { once: true });\n      video.src = src;\n      video.load();\n      return;\n    }\n\n    var image = new Image();\n    image.crossOrigin = 'anonymous';\n    image.addEventListener('load', function() { resolve(image); }, { once: true });\n    image.addEventListener('error', function() { reject(new Error('Failed to load image source.')); }, { once: true });\n    image.src = src;\n  });\n}\n\nasync function mountHalftoneRuntime(host, config) {\n  var media = config.media;\n  var settings = config.settings;\n  var options = config.options;\n  var render = config.render;\n\n  host.style.position = host.style.position || 'relative';\n  host.style.overflow = host.style.overflow || 'hidden';\n\n  var canvas = document.createElement('canvas');\n  canvas.width = Math.max(1, Math.round(render.width));\n  canvas.height = Math.max(1, Math.round(render.height));\n  canvas.style.width = '100%';\n  canvas.style.height = '100%';\n  canvas.style.objectFit = 'contain';\n  canvas.style.display = 'block';\n  canvas.style.willChange = 'transform, opacity';\n  canvas.style.opacity = options.fadeIn ? '0' : '1';\n\n  host.replaceChildren(canvas);\n\n  var source = await createMediaSource(media.type, media.src);\n  if (options.fadeIn) {\n    requestAnimationFrame(function() {\n      canvas.style.transition = 'opacity 420ms ease';\n      canvas.style.opacity = '1';\n    });\n  }\n\n  var running = true;\n  var raf = 0;\n  var visible = true;\n  var renderedImage = false;\n\n  if (media.type === 'video' && options.autoplay !== false) {\n    source.play().catch(function() {});\n  }\n\n  var draw = function() {\n    if (!running) return;\n\n    if (media.type === 'video') {\n      if (!options.pauseWhenOffscreen || visible) {\n        renderHalftoneFrame(canvas, source, settings, render.scaleFactor, options);\n      }\n      if (options.autoplay !== false) {\n        raf = requestAnimationFrame(draw);\n      }\n    } else if (!renderedImage) {\n      renderHalftoneFrame(canvas, source, settings, render.scaleFactor, options);\n      renderedImage = true;\n    }\n  };\n\n  draw();\n\n  var observer = null;\n  if (options.pauseWhenOffscreen && typeof IntersectionObserver !== 'undefined') {\n    observer = new IntersectionObserver(function(entries) {\n      visible = entries.some(function(entry) { return entry.isIntersecting; });\n      if (media.type === 'video' && options.autoplay !== false) {\n        if (visible) {\n          source.play().catch(function() {});\n        } else {\n          source.pause();\n        }\n      }\n    });\n    observer.observe(host);\n  }\n\n  var handlePointerMove = function(event) {\n    if (!options.enableInteraction) return;\n    var bounds = canvas.getBoundingClientRect();\n    var nx = (event.clientX - bounds.left) / bounds.width - 0.5;\n    var ny = (event.clientY - bounds.top) / bounds.height - 0.5;\n    canvas.style.transform = 'scale(1.01) translate(' + (nx * 8).toFixed(2) + 'px, ' + (ny * 8).toFixed(2) + 'px)';\n  };\n\n  var handlePointerLeave = function() {\n    canvas.style.transform = 'none';\n  };\n\n  if (options.enableInteraction) {\n    canvas.addEventListener('pointermove', handlePointerMove);\n    canvas.addEventListener('pointerleave', handlePointerLeave);\n  }\n\n  return function cleanup() {\n    running = false;\n    if (raf) {\n      cancelAnimationFrame(raf);\n    }\n    if (observer) {\n      observer.disconnect();\n    }\n    if (options.enableInteraction) {\n      canvas.removeEventListener('pointermove', handlePointerMove);\n      canvas.removeEventListener('pointerleave', handlePointerLeave);\n    }\n    if (media.type === 'video') {\n      source.pause();\n      source.src = '';\n      source.load();\n    }\n    host.replaceChildren();\n  };\n}\n`;
+
+    const componentSource = `import React, { useEffect, useRef } from 'react';\n\nconst embeddedMedia = {\n  type: '${mediaPayload.mediaType}',\n  src: \`${escapeTemplateLiteral(mediaPayload.dataUrl)}\`\n};\nconst defaultSettings = ${settingsJson};\nconst defaultOptions = ${runtimeOptionsJson};\nconst defaultRender = {\n  width: ${targetWidth},\n  height: ${targetHeight},\n  scaleFactor: ${scaleFactor}\n};\n\n${runtimeCore}\n\nexport default function ${componentName}({\n  children,\n  className = '',\n  style = {},\n  mediaType,\n  mediaSrc,\n  settings = defaultSettings,\n  autoplay = defaultOptions.autoplay,\n  pauseWhenOffscreen = defaultOptions.pauseWhenOffscreen,\n  enableInteraction = defaultOptions.enableInteraction,\n  transparentBackground = defaultOptions.transparentBackground,\n  alphaMaskGradient = defaultOptions.alphaMaskGradient,\n  fadeIn = defaultOptions.fadeIn,\n  renderWidth = defaultRender.width,\n  renderHeight = defaultRender.height,\n  scaleFactor = defaultRender.scaleFactor\n}) {\n  const renderRef = useRef(null);\n\n  useEffect(() => {\n    if (!renderRef.current) {\n      return undefined;\n    }\n\n    let disposed = false;\n    let cleanup = () => {};\n\n    mountHalftoneRuntime(renderRef.current, {\n      media: {\n        type: mediaType || embeddedMedia.type,\n        src: mediaSrc || embeddedMedia.src\n      },\n      settings,\n      options: {\n        autoplay,\n        pauseWhenOffscreen,\n        enableInteraction,\n        transparentBackground,\n        alphaMaskGradient,\n        fadeIn\n      },\n      render: {\n        width: renderWidth,\n        height: renderHeight,\n        scaleFactor\n      }\n    })\n      .then((disposeFn) => {\n        if (disposed) {\n          disposeFn();\n          return;\n        }\n        cleanup = disposeFn;\n      })\n      .catch((error) => {\n        console.error('[Halftone Export]', error);\n      });\n\n    return () => {\n      disposed = true;\n      cleanup();\n    };\n  }, [\n    mediaType,\n    mediaSrc,\n    settings,\n    autoplay,\n    pauseWhenOffscreen,\n    enableInteraction,\n    transparentBackground,\n    alphaMaskGradient,\n    fadeIn,\n    renderWidth,\n    renderHeight,\n    scaleFactor\n  ]);\n\n  return (\n    <div\n      className={className}\n      style={{\n        position: 'relative',\n        width: '100%',\n        height: '100%',\n        overflow: 'hidden',\n        ...style\n      }}\n    >\n      <div ref={renderRef} style={{ position: 'absolute', inset: 0 }} />\n      {children ? <div style={{ position: 'relative', zIndex: 2 }}>{children}</div> : null}\n    </div>\n  );\n}\n`;
+
+    downloadTextFile(componentSource, `${exportName}.jsx`, 'text/javascript;charset=utf-8');
+    return `Exported realtime React component (${componentName}.jsx).`;
+  }, [downloadTextFile, exportOptions, getCurrentMediaPayload, getExportDimensions, hasSource]);
+
+  const runModalExport = useCallback(async () => {
+    if (isExporting) {
+      return;
+    }
+
+    setIsExporting(true);
+    setExportStatusMessage('');
+
+    try {
+      let message = '';
+      if (activeExportType === EXPORT_TYPES.gif) {
+        message = await exportGif();
+      } else if (activeExportType === EXPORT_TYPES.mp4) {
+        message = await exportMp4();
+      } else if (activeExportType === EXPORT_TYPES.htmlJsBg) {
+        message = await exportHtmlJsBackground();
+      } else if (activeExportType === EXPORT_TYPES.reactComponent) {
+        message = await exportReactComponent();
+      }
+
+      setExportStatusMessage(message || 'Export complete.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Export failed.';
+      setExportStatusMessage(message);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [activeExportType, exportGif, exportHtmlJsBackground, exportMp4, exportReactComponent, isExporting]);
 
   const resetDialValues = useCallback(() => {
     const panel = DialStore.getPanels().find((entry) => entry.name === PANEL_NAME);
@@ -697,13 +1122,33 @@ function App() {
         return;
       }
 
-      if (path === ACTION_PATHS.resetAll) {
+      if (path === ACTION_PATHS.resetSettings) {
         resetDialValues();
         return;
       }
 
       if (path === ACTION_PATHS.exportPng) {
         exportCurrentFrame();
+        return;
+      }
+
+      if (path === ACTION_PATHS.exportGif) {
+        openExportModal(EXPORT_TYPES.gif);
+        return;
+      }
+
+      if (path === ACTION_PATHS.exportMp4) {
+        openExportModal(EXPORT_TYPES.mp4);
+        return;
+      }
+
+      if (path === ACTION_PATHS.exportHtmlJsBg) {
+        openExportModal(EXPORT_TYPES.htmlJsBg);
+        return;
+      }
+
+      if (path === ACTION_PATHS.exportReactComponent) {
+        openExportModal(EXPORT_TYPES.reactComponent);
         return;
       }
 
@@ -716,7 +1161,7 @@ function App() {
         updateDialValue('Style.pageBackground', settingsRef.current.paperColor);
       }
     },
-    [exportCurrentFrame, resetDialValues, updateDialValue]
+    [exportCurrentFrame, openExportModal, resetDialValues, updateDialValue]
   );
 
   const dialConfig = useMemo(
@@ -762,10 +1207,15 @@ function App() {
       View: {
         zoom: [1, VIEW_LIMITS.minZoom, VIEW_LIMITS.maxZoom, 0.05]
       },
-      Actions: {
-        resetAll: { type: 'action', label: 'Reset All' },
-        exportPng: { type: 'action', label: 'Export PNG' },
-        resetView: { type: 'action', label: 'Reset View' }
+      resetSettings: { type: 'action', label: 'Reset Settings' },
+      resetView: { type: 'action', label: 'Reset View' },
+      Export: {
+        _collapsed: true,
+        png: { type: 'action', label: 'PNG' },
+        gif: { type: 'action', label: 'GIF' },
+        mp4: { type: 'action', label: 'MP4' },
+        htmlJsBg: { type: 'action', label: 'HTML + JS BG' },
+        reactComponent: { type: 'action', label: 'React Component' }
       }
     }),
     []
@@ -809,10 +1259,50 @@ function App() {
     [dialValues]
   );
   const zoom = dialValues.View.zoom;
+  const isAnimationExport = activeExportType === EXPORT_TYPES.gif || activeExportType === EXPORT_TYPES.mp4;
+  const isCodeExport =
+    activeExportType === EXPORT_TYPES.htmlJsBg || activeExportType === EXPORT_TYPES.reactComponent;
+
+  const exportDescription = useMemo(() => {
+    if (activeExportType === EXPORT_TYPES.gif) {
+      return 'Export an animated GIF from the current canvas with your chosen duration, FPS, and resolution.';
+    }
+
+    if (activeExportType === EXPORT_TYPES.mp4) {
+      return 'Export a video from the current canvas. MP4 is used when available in your browser.';
+    }
+
+    if (activeExportType === EXPORT_TYPES.htmlJsBg) {
+      return 'Generate a ready-to-use HTML + JS background export based on the current halftone output.';
+    }
+
+    return 'Generate a React component file with the current halftone output embedded as a background.';
+  }, [activeExportType]);
 
   useEffect(() => {
     zoomRef.current = zoom;
   }, [zoom]);
+
+  useEffect(() => {
+    if (!isExportModalOpen) {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+
+    const handleEscapeClose = (event) => {
+      if (event.key === 'Escape') {
+        closeExportModal();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscapeClose, true);
+    return () => {
+      window.removeEventListener('keydown', handleEscapeClose, true);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [closeExportModal, isExportModalOpen]);
 
   const applyZoomValue = useCallback(
     (nextZoom) => {
@@ -827,6 +1317,10 @@ function App() {
 
   useEffect(() => {
     const handleWheelZoom = (event) => {
+      if (isExportModalOpen) {
+        return;
+      }
+
       if ((!event.metaKey && !event.ctrlKey) || isEditableTarget(event.target)) {
         return;
       }
@@ -838,10 +1332,14 @@ function App() {
 
     window.addEventListener('wheel', handleWheelZoom, { passive: false, capture: true });
     return () => window.removeEventListener('wheel', handleWheelZoom, true);
-  }, [applyZoomValue]);
+  }, [applyZoomValue, isExportModalOpen]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      if (isExportModalOpen) {
+        return;
+      }
+
       if ((!event.metaKey && !event.ctrlKey) || isEditableTarget(event.target)) {
         return;
       }
@@ -864,7 +1362,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [applyZoomValue]);
+  }, [applyZoomValue, isExportModalOpen]);
 
   const handleFileUpload = useCallback(
     (event) => {
@@ -968,6 +1466,204 @@ function App() {
           </div>
         </div>
       </main>
+
+      {isExportModalOpen && (
+        <div
+          className="export-modal-backdrop"
+          onClick={closeExportModal}
+        >
+          <section
+            className="export-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Export options"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="export-modal-header">
+              <h2>Export</h2>
+              <button
+                type="button"
+                className="export-close-button"
+                onClick={closeExportModal}
+                disabled={isExporting}
+              >
+                Close
+              </button>
+            </header>
+
+            <div className="export-tab-grid">
+              {EXPORT_TAB_ORDER.map((exportType) => (
+                <button
+                  key={exportType}
+                  type="button"
+                  className={`export-tab-button ${activeExportType === exportType ? 'is-active' : ''}`}
+                  onClick={() => setActiveExportType(exportType)}
+                  disabled={isExporting}
+                >
+                  {EXPORT_TYPE_LABELS[exportType]}
+                </button>
+              ))}
+            </div>
+
+            <p className="export-description">{exportDescription}</p>
+
+            <div className="export-options-grid">
+              <label className="export-field">
+                <span>File Name</span>
+                <input
+                  type="text"
+                  value={exportOptions.fileName}
+                  onChange={(event) => updateExportOption('fileName', event.target.value)}
+                  disabled={isExporting}
+                />
+              </label>
+
+              {isAnimationExport && (
+                <label className="export-field">
+                  <span>Duration (sec)</span>
+                  <input
+                    type="number"
+                    min="0.5"
+                    max="30"
+                    step="0.5"
+                    value={exportOptions.durationSec}
+                    onChange={(event) => updateExportOption('durationSec', event.target.value)}
+                    disabled={isExporting}
+                  />
+                </label>
+              )}
+
+              {isAnimationExport && (
+                <label className="export-field">
+                  <span>FPS</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="60"
+                    step="1"
+                    value={exportOptions.fps}
+                    onChange={(event) => updateExportOption('fps', event.target.value)}
+                    disabled={isExporting}
+                  />
+                </label>
+              )}
+
+              <label className="export-field">
+                <span>Resolution</span>
+                <select
+                  value={exportOptions.resolution}
+                  onChange={(event) => updateExportOption('resolution', event.target.value)}
+                  disabled={isExporting}
+                >
+                  {EXPORT_RESOLUTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {activeExportType === EXPORT_TYPES.mp4 && (
+                <label className="export-field">
+                  <span>Video Quality</span>
+                  <select
+                    value={exportOptions.videoQuality}
+                    onChange={(event) => updateExportOption('videoQuality', event.target.value)}
+                    disabled={isExporting}
+                  >
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                  </select>
+                </label>
+              )}
+            </div>
+
+            {isCodeExport && (
+              <div className="export-checkbox-grid">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.transparentBackground}
+                    onChange={(event) => updateExportOption('transparentBackground', event.target.checked)}
+                    disabled={isExporting}
+                  />
+                  Transparent background
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.enableInteraction}
+                    onChange={(event) => updateExportOption('enableInteraction', event.target.checked)}
+                    disabled={isExporting}
+                  />
+                  Enable hover + click interaction
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.alphaMaskGradient}
+                    onChange={(event) => updateExportOption('alphaMaskGradient', event.target.checked)}
+                    disabled={isExporting}
+                  />
+                  Alpha mask gradient
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.fadeIn}
+                    onChange={(event) => updateExportOption('fadeIn', event.target.checked)}
+                    disabled={isExporting}
+                  />
+                  Fade in
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.pauseWhenOffscreen}
+                    onChange={(event) => updateExportOption('pauseWhenOffscreen', event.target.checked)}
+                    disabled={isExporting}
+                  />
+                  Pause when off-screen
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={exportOptions.adaptivePerformance}
+                    onChange={(event) => updateExportOption('adaptivePerformance', event.target.checked)}
+                    disabled={isExporting}
+                  />
+                  Adaptive performance
+                </label>
+                {activeExportType === EXPORT_TYPES.htmlJsBg && (
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={exportOptions.splitHtmlJsFile}
+                      onChange={(event) => updateExportOption('splitHtmlJsFile', event.target.checked)}
+                      disabled={isExporting}
+                    />
+                    Split into HTML + external JavaScript file
+                  </label>
+                )}
+              </div>
+            )}
+
+            <footer className="export-actions">
+              <button
+                type="button"
+                className="export-run-button"
+                onClick={runModalExport}
+                disabled={isExporting}
+              >
+                {isExporting ? 'Exporting...' : `Export ${EXPORT_TYPE_LABELS[activeExportType]}`}
+              </button>
+            </footer>
+
+            {exportStatusMessage && <p className="export-status">{exportStatusMessage}</p>}
+          </section>
+        </div>
+      )}
 
       <DialRoot position="top-right" defaultOpen />
     </div>
