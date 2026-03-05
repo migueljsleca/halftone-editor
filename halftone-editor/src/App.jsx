@@ -38,11 +38,7 @@ const COLOR_PRESETS = [
 const ACTION_PATHS = {
   uploadMedia: 'Media.uploadMedia',
   resetSettings: 'resetSettings',
-  exportPng: 'Export.png',
-  exportGif: 'Export.gif',
-  exportMp4: 'Export.mp4',
-  exportHtmlJsBg: 'Export.htmlJsBg',
-  exportReactComponent: 'Export.reactComponent',
+  openExport: 'openExport',
   resetView: 'resetView',
   matchPageToPaper: 'Style.matchPageToPaper'
 };
@@ -53,6 +49,7 @@ const VIEW_LIMITS = {
 };
 
 const EXPORT_TYPES = {
+  png: 'png',
   gif: 'gif',
   mp4: 'mp4',
   htmlJsBg: 'htmlJsBg',
@@ -60,13 +57,23 @@ const EXPORT_TYPES = {
 };
 
 const EXPORT_TYPE_LABELS = {
+  [EXPORT_TYPES.png]: 'PNG',
   [EXPORT_TYPES.gif]: 'GIF',
   [EXPORT_TYPES.mp4]: 'MP4 Video',
   [EXPORT_TYPES.htmlJsBg]: 'HTML + JS BG',
   [EXPORT_TYPES.reactComponent]: 'React Component'
 };
 
+const EXPORT_TYPE_META = {
+  [EXPORT_TYPES.png]: 'High-res still export',
+  [EXPORT_TYPES.gif]: 'Animated image sequence',
+  [EXPORT_TYPES.mp4]: 'High-res browser video',
+  [EXPORT_TYPES.htmlJsBg]: 'Standalone web background',
+  [EXPORT_TYPES.reactComponent]: 'Reusable JSX export'
+};
+
 const EXPORT_TAB_ORDER = [
+  EXPORT_TYPES.png,
   EXPORT_TYPES.htmlJsBg,
   EXPORT_TYPES.reactComponent,
   EXPORT_TYPES.gif,
@@ -86,6 +93,12 @@ const VIDEO_QUALITY_BITRATES = {
   medium: 5_000_000,
   high: 9_000_000
 };
+
+const VIDEO_QUALITY_OPTIONS = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' }
+];
 
 const KEYBOARD_ZOOM_STEP = 1.1;
 
@@ -493,6 +506,117 @@ function generateHalftone({ targetCanvas, sourceElement, settings, baseWidth, ba
   }
 }
 
+function ExportDropdown({ value, options, onChange, disabled, ariaLabel }) {
+  const rootRef = useRef(null);
+  const [isOpen, setIsOpen] = useState(false);
+
+  const selectedOption = useMemo(() => {
+    return options.find((option) => option.value === value) || options[0];
+  }, [options, value]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      return undefined;
+    }
+
+    const handlePointerDown = (event) => {
+      if (rootRef.current && !rootRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    };
+
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setIsOpen(false);
+      }
+    };
+
+    window.addEventListener('mousedown', handlePointerDown);
+    window.addEventListener('keydown', handleEscape);
+
+    return () => {
+      window.removeEventListener('mousedown', handlePointerDown);
+      window.removeEventListener('keydown', handleEscape);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (disabled && isOpen) {
+      setIsOpen(false);
+    }
+  }, [disabled, isOpen]);
+
+  const selectValue = useCallback(
+    (nextValue) => {
+      onChange(nextValue);
+      setIsOpen(false);
+    },
+    [onChange]
+  );
+
+  const handleTriggerKeyDown = useCallback(
+    (event) => {
+      if (disabled) {
+        return;
+      }
+
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        setIsOpen((open) => !open);
+      }
+
+      if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+        return;
+      }
+
+      event.preventDefault();
+      const currentIndex = Math.max(0, options.findIndex((option) => option.value === value));
+      const offset = event.key === 'ArrowDown' ? 1 : -1;
+      const nextIndex = (currentIndex + offset + options.length) % options.length;
+      selectValue(options[nextIndex].value);
+    },
+    [disabled, options, selectValue, value]
+  );
+
+  return (
+    <div ref={rootRef} className={`export-select ${isOpen ? 'is-open' : ''} ${disabled ? 'is-disabled' : ''}`}>
+      <button
+        type="button"
+        className="export-select-trigger"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={isOpen}
+        disabled={disabled}
+        onClick={() => setIsOpen((open) => !open)}
+        onKeyDown={handleTriggerKeyDown}
+      >
+        <span className="export-select-value">{selectedOption.label}</span>
+        <span className="export-select-chevron" aria-hidden="true" />
+      </button>
+
+      {isOpen && (
+        <div className="export-select-menu" role="listbox" aria-label={ariaLabel}>
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              role="option"
+              className={`export-select-option ${option.value === value ? 'is-selected' : ''}`}
+              aria-selected={option.value === value}
+              onClick={() => selectValue(option.value)}
+            >
+              <span className="export-select-check" aria-hidden="true">
+                {option.value === value ? '✓' : ''}
+              </span>
+              <span>{option.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function App() {
   const fileInputRef = useRef(null);
   const canvasRef = useRef(null);
@@ -512,7 +636,7 @@ function App() {
   const [hasSource, setHasSource] = useState(false);
   const [canvasSize, setCanvasSize] = useState(sourceSizeRef.current);
   const [isExportModalOpen, setIsExportModalOpen] = useState(false);
-  const [activeExportType, setActiveExportType] = useState(EXPORT_TYPES.gif);
+  const [activeExportType, setActiveExportType] = useState(EXPORT_TYPES.png);
   const [isExporting, setIsExporting] = useState(false);
   const [exportStatusMessage, setExportStatusMessage] = useState('');
   const [exportOptions, setExportOptions] = useState({
@@ -835,7 +959,7 @@ function App() {
 
   const exportCurrentFrame = useCallback(() => {
     if (!hasSource || !canvasRef.current) {
-      return;
+      throw new Error('Load an image or video first.');
     }
 
     const { targetWidth, targetHeight, scaleFactor } = getExportDimensions('source');
@@ -856,6 +980,7 @@ function App() {
       'image/png',
       1
     );
+    return `Exported PNG (${targetWidth}x${targetHeight}).`;
   }, [downloadBlob, exportOptions.fileName, getExportDimensions, hasSource, processFrame]);
 
   const exportGif = useCallback(async () => {
@@ -1065,7 +1190,9 @@ function App() {
 
     try {
       let message = '';
-      if (activeExportType === EXPORT_TYPES.gif) {
+      if (activeExportType === EXPORT_TYPES.png) {
+        message = exportCurrentFrame();
+      } else if (activeExportType === EXPORT_TYPES.gif) {
         message = await exportGif();
       } else if (activeExportType === EXPORT_TYPES.mp4) {
         message = await exportMp4();
@@ -1082,7 +1209,7 @@ function App() {
     } finally {
       setIsExporting(false);
     }
-  }, [activeExportType, exportGif, exportHtmlJsBackground, exportMp4, exportReactComponent, isExporting]);
+  }, [activeExportType, exportCurrentFrame, exportGif, exportHtmlJsBackground, exportMp4, exportReactComponent, isExporting]);
 
   const resetDialValues = useCallback(() => {
     const panel = DialStore.getPanels().find((entry) => entry.name === PANEL_NAME);
@@ -1127,28 +1254,8 @@ function App() {
         return;
       }
 
-      if (path === ACTION_PATHS.exportPng) {
-        exportCurrentFrame();
-        return;
-      }
-
-      if (path === ACTION_PATHS.exportGif) {
-        openExportModal(EXPORT_TYPES.gif);
-        return;
-      }
-
-      if (path === ACTION_PATHS.exportMp4) {
-        openExportModal(EXPORT_TYPES.mp4);
-        return;
-      }
-
-      if (path === ACTION_PATHS.exportHtmlJsBg) {
-        openExportModal(EXPORT_TYPES.htmlJsBg);
-        return;
-      }
-
-      if (path === ACTION_PATHS.exportReactComponent) {
-        openExportModal(EXPORT_TYPES.reactComponent);
+      if (path === ACTION_PATHS.openExport) {
+        openExportModal(activeExportType);
         return;
       }
 
@@ -1161,7 +1268,7 @@ function App() {
         updateDialValue('Style.pageBackground', settingsRef.current.paperColor);
       }
     },
-    [exportCurrentFrame, openExportModal, resetDialValues, updateDialValue]
+    [activeExportType, openExportModal, resetDialValues, updateDialValue]
   );
 
   const dialConfig = useMemo(
@@ -1209,14 +1316,7 @@ function App() {
       },
       resetSettings: { type: 'action', label: 'Reset Settings' },
       resetView: { type: 'action', label: 'Reset View' },
-      Export: {
-        _collapsed: true,
-        png: { type: 'action', label: 'PNG' },
-        gif: { type: 'action', label: 'GIF' },
-        mp4: { type: 'action', label: 'MP4' },
-        htmlJsBg: { type: 'action', label: 'HTML + JS BG' },
-        reactComponent: { type: 'action', label: 'React Component' }
-      }
+      openExport: { type: 'action', label: 'Export' }
     }),
     []
   );
@@ -1264,6 +1364,10 @@ function App() {
     activeExportType === EXPORT_TYPES.htmlJsBg || activeExportType === EXPORT_TYPES.reactComponent;
 
   const exportDescription = useMemo(() => {
+    if (activeExportType === EXPORT_TYPES.png) {
+      return 'Export a still image from the current canvas at the source resolution.';
+    }
+
     if (activeExportType === EXPORT_TYPES.gif) {
       return 'Export an animated GIF from the current canvas with your chosen duration, FPS, and resolution.';
     }
@@ -1480,187 +1584,217 @@ function App() {
             onClick={(event) => event.stopPropagation()}
           >
             <header className="export-modal-header">
-              <h2>Export</h2>
+              <div className="export-heading-block">
+                <h2>Export Options</h2>
+              </div>
               <button
                 type="button"
                 className="export-close-button"
                 onClick={closeExportModal}
                 disabled={isExporting}
+                aria-label="Close export modal"
+                title="Close"
               >
-                Close
+                <svg className="export-close-icon" viewBox="0 0 16 16" aria-hidden="true">
+                  <path d="M3.5 3.5L12.5 12.5" />
+                  <path d="M12.5 3.5L3.5 12.5" />
+                </svg>
               </button>
             </header>
 
-            <div className="export-tab-grid">
-              {EXPORT_TAB_ORDER.map((exportType) => (
-                <button
-                  key={exportType}
-                  type="button"
-                  className={`export-tab-button ${activeExportType === exportType ? 'is-active' : ''}`}
-                  onClick={() => setActiveExportType(exportType)}
-                  disabled={isExporting}
-                >
-                  {EXPORT_TYPE_LABELS[exportType]}
-                </button>
-              ))}
-            </div>
-
-            <p className="export-description">{exportDescription}</p>
-
-            <div className="export-options-grid">
-              <label className="export-field">
-                <span>File Name</span>
-                <input
-                  type="text"
-                  value={exportOptions.fileName}
-                  onChange={(event) => updateExportOption('fileName', event.target.value)}
-                  disabled={isExporting}
-                />
-              </label>
-
-              {isAnimationExport && (
-                <label className="export-field">
-                  <span>Duration (sec)</span>
-                  <input
-                    type="number"
-                    min="0.5"
-                    max="30"
-                    step="0.5"
-                    value={exportOptions.durationSec}
-                    onChange={(event) => updateExportOption('durationSec', event.target.value)}
-                    disabled={isExporting}
-                  />
-                </label>
-              )}
-
-              {isAnimationExport && (
-                <label className="export-field">
-                  <span>FPS</span>
-                  <input
-                    type="number"
-                    min="1"
-                    max="60"
-                    step="1"
-                    value={exportOptions.fps}
-                    onChange={(event) => updateExportOption('fps', event.target.value)}
-                    disabled={isExporting}
-                  />
-                </label>
-              )}
-
-              <label className="export-field">
-                <span>Resolution</span>
-                <select
-                  value={exportOptions.resolution}
-                  onChange={(event) => updateExportOption('resolution', event.target.value)}
-                  disabled={isExporting}
-                >
-                  {EXPORT_RESOLUTION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
+            <div className="export-layout">
+              <aside className="export-sidebar">
+                <div className="export-tab-grid">
+                  {EXPORT_TAB_ORDER.map((exportType) => (
+                    <button
+                      key={exportType}
+                      type="button"
+                      className={`export-tab-button ${activeExportType === exportType ? 'is-active' : ''}`}
+                      onClick={() => setActiveExportType(exportType)}
+                      disabled={isExporting}
+                    >
+                      <strong>{EXPORT_TYPE_LABELS[exportType]}</strong>
+                      <span>{EXPORT_TYPE_META[exportType]}</span>
+                    </button>
                   ))}
-                </select>
-              </label>
+                </div>
+              </aside>
 
-              {activeExportType === EXPORT_TYPES.mp4 && (
-                <label className="export-field">
-                  <span>Video Quality</span>
-                  <select
-                    value={exportOptions.videoQuality}
-                    onChange={(event) => updateExportOption('videoQuality', event.target.value)}
+              <div className="export-main">
+                <div className="export-main-scroll">
+                  <section className="export-panel">
+                    <div className="export-section-heading">
+                      <h3>Setup</h3>
+                      <p>{exportDescription}</p>
+                    </div>
+
+                    <div className="export-options-grid">
+                      <label className="export-field">
+                        <span>File Name</span>
+                        <input
+                          type="text"
+                          value={exportOptions.fileName}
+                          onChange={(event) => updateExportOption('fileName', event.target.value)}
+                          disabled={isExporting}
+                        />
+                      </label>
+
+                    <label className="export-field">
+                      <span>Resolution</span>
+                      <ExportDropdown
+                        value={exportOptions.resolution}
+                        options={EXPORT_RESOLUTION_OPTIONS}
+                        onChange={(nextValue) => updateExportOption('resolution', nextValue)}
+                        disabled={isExporting}
+                        ariaLabel="Resolution"
+                      />
+                    </label>
+
+                      {isAnimationExport && (
+                        <label className="export-field">
+                          <span>Duration (sec)</span>
+                          <input
+                            type="number"
+                            min="0.5"
+                            max="30"
+                            step="0.5"
+                            value={exportOptions.durationSec}
+                            onChange={(event) => updateExportOption('durationSec', event.target.value)}
+                            disabled={isExporting}
+                          />
+                        </label>
+                      )}
+
+                      {isAnimationExport && (
+                        <label className="export-field">
+                          <span>FPS</span>
+                          <input
+                            type="number"
+                            min="1"
+                            max="60"
+                            step="1"
+                            value={exportOptions.fps}
+                            onChange={(event) => updateExportOption('fps', event.target.value)}
+                            disabled={isExporting}
+                          />
+                        </label>
+                      )}
+
+                      {activeExportType === EXPORT_TYPES.mp4 && (
+                      <label className="export-field">
+                        <span>Video Quality</span>
+                        <ExportDropdown
+                          value={exportOptions.videoQuality}
+                          options={VIDEO_QUALITY_OPTIONS}
+                          onChange={(nextValue) => updateExportOption('videoQuality', nextValue)}
+                          disabled={isExporting}
+                          ariaLabel="Video quality"
+                        />
+                      </label>
+                    )}
+                    </div>
+                  </section>
+
+                  {isCodeExport && (
+                    <section className="export-panel export-runtime-panel">
+                      <div className="export-section-heading">
+                        <h3>Runtime Options</h3>
+                        <p>Toggle how the generated background behaves once it is embedded.</p>
+                      </div>
+
+                      <div className="export-checkbox-grid">
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.transparentBackground}
+                            onChange={(event) => updateExportOption('transparentBackground', event.target.checked)}
+                            disabled={isExporting}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>Transparent background</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.enableInteraction}
+                            onChange={(event) => updateExportOption('enableInteraction', event.target.checked)}
+                            disabled={isExporting}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>Enable hover + click interaction</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.alphaMaskGradient}
+                            onChange={(event) => updateExportOption('alphaMaskGradient', event.target.checked)}
+                            disabled={isExporting}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>Alpha mask gradient</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.fadeIn}
+                            onChange={(event) => updateExportOption('fadeIn', event.target.checked)}
+                            disabled={isExporting}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>Fade in</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.pauseWhenOffscreen}
+                            onChange={(event) => updateExportOption('pauseWhenOffscreen', event.target.checked)}
+                            disabled={isExporting}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>Pause when off-screen</span>
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.adaptivePerformance}
+                            onChange={(event) => updateExportOption('adaptivePerformance', event.target.checked)}
+                            disabled={isExporting}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>Adaptive performance</span>
+                        </label>
+                        <label className={`export-checkbox-wide ${activeExportType === EXPORT_TYPES.htmlJsBg ? '' : 'is-placeholder'}`}>
+                          <input
+                            type="checkbox"
+                            checked={exportOptions.splitHtmlJsFile}
+                            onChange={(event) => updateExportOption('splitHtmlJsFile', event.target.checked)}
+                            disabled={isExporting || !isCodeExport || activeExportType !== EXPORT_TYPES.htmlJsBg}
+                          />
+                          <span className="export-checkbox-mark" aria-hidden="true" />
+                          <span>
+                            Split into HTML + external
+                            <br />
+                            JavaScript file
+                          </span>
+                        </label>
+                      </div>
+                    </section>
+                  )}
+                </div>
+
+                <footer className="export-actions">
+                  {exportStatusMessage ? <p className="export-status">{exportStatusMessage}</p> : <div className="export-status-spacer" />}
+                  <button
+                    type="button"
+                    className="export-run-button"
+                    onClick={runModalExport}
                     disabled={isExporting}
                   >
-                    <option value="low">Low</option>
-                    <option value="medium">Medium</option>
-                    <option value="high">High</option>
-                  </select>
-                </label>
-              )}
-            </div>
-
-            {isCodeExport && (
-              <div className="export-checkbox-grid">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={exportOptions.transparentBackground}
-                    onChange={(event) => updateExportOption('transparentBackground', event.target.checked)}
-                    disabled={isExporting}
-                  />
-                  Transparent background
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={exportOptions.enableInteraction}
-                    onChange={(event) => updateExportOption('enableInteraction', event.target.checked)}
-                    disabled={isExporting}
-                  />
-                  Enable hover + click interaction
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={exportOptions.alphaMaskGradient}
-                    onChange={(event) => updateExportOption('alphaMaskGradient', event.target.checked)}
-                    disabled={isExporting}
-                  />
-                  Alpha mask gradient
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={exportOptions.fadeIn}
-                    onChange={(event) => updateExportOption('fadeIn', event.target.checked)}
-                    disabled={isExporting}
-                  />
-                  Fade in
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={exportOptions.pauseWhenOffscreen}
-                    onChange={(event) => updateExportOption('pauseWhenOffscreen', event.target.checked)}
-                    disabled={isExporting}
-                  />
-                  Pause when off-screen
-                </label>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={exportOptions.adaptivePerformance}
-                    onChange={(event) => updateExportOption('adaptivePerformance', event.target.checked)}
-                    disabled={isExporting}
-                  />
-                  Adaptive performance
-                </label>
-                {activeExportType === EXPORT_TYPES.htmlJsBg && (
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={exportOptions.splitHtmlJsFile}
-                      onChange={(event) => updateExportOption('splitHtmlJsFile', event.target.checked)}
-                      disabled={isExporting}
-                    />
-                    Split into HTML + external JavaScript file
-                  </label>
-                )}
+                    {isExporting ? 'Exporting...' : `Export ${EXPORT_TYPE_LABELS[activeExportType]}`}
+                  </button>
+                </footer>
               </div>
-            )}
-
-            <footer className="export-actions">
-              <button
-                type="button"
-                className="export-run-button"
-                onClick={runModalExport}
-                disabled={isExporting}
-              >
-                {isExporting ? 'Exporting...' : `Export ${EXPORT_TYPE_LABELS[activeExportType]}`}
-              </button>
-            </footer>
-
-            {exportStatusMessage && <p className="export-status">{exportStatusMessage}</p>}
+            </div>
           </section>
         </div>
       )}
