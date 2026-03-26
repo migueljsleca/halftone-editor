@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "npm install --prefix halftone-editor",
+  "buildCommand": "npm run build",
+  "outputDirectory": "halftone-editor/dist"
+}

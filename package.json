@@ -1,4 +1,11 @@
 {
+  "name": "halftone-1",
+  "private": true,
+  "scripts": {
+    "dev": "npm run dev --prefix halftone-editor",
+    "build": "npm run build --prefix halftone-editor",
+    "preview": "npm run preview --prefix halftone-editor"
+  },
   "dependencies": {
     "dialkit": "^1.0.0",
     "motion": "^12.35.0"
