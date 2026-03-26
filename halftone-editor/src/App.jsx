@@ -6,7 +6,7 @@ import 'dialkit/styles.css';
 const PANEL_NAME = 'Mono Halftone';
 
 const DEFAULT_SETTINGS = {
-  dotSize: 20,
+  dotSize: 30,
   angle: 0,
   contrast: 0,
   spread: 0,
@@ -23,6 +23,8 @@ const DEFAULT_SETTINGS = {
   grainOverlay: 0,
   grainSize: 0
 };
+
+const DEFAULT_ZOOM = 0.5;
 
 const COLOR_PRESETS = [
   { name: 'Classic', paperColor: '#FFFFFF', inkColor: '#000000' },
@@ -1423,7 +1425,7 @@ function App() {
     DialStore.updateValue(panel.id, 'Advanced.grainMixer', DEFAULT_SETTINGS.grainMixer);
     DialStore.updateValue(panel.id, 'Advanced.grainOverlay', DEFAULT_SETTINGS.grainOverlay);
     DialStore.updateValue(panel.id, 'Advanced.grainSize', DEFAULT_SETTINGS.grainSize);
-    DialStore.updateValue(panel.id, 'View.zoom', 1);
+    DialStore.updateValue(panel.id, 'View.zoom', DEFAULT_ZOOM);
     presetRef.current = DEFAULT_SETTINGS.preset;
   }, []);
 
@@ -1453,7 +1455,7 @@ function App() {
       }
 
       if (path === ACTION_PATHS.resetView) {
-        updateDialValue('View.zoom', 1);
+        updateDialValue('View.zoom', DEFAULT_ZOOM);
         return;
       }
 
@@ -1508,7 +1510,7 @@ function App() {
         grainSize: [DEFAULT_SETTINGS.grainSize, 0, 1, 0.01]
       },
       View: {
-        zoom: [1, VIEW_LIMITS.minZoom, VIEW_LIMITS.maxZoom, 0.05]
+        zoom: [DEFAULT_ZOOM, VIEW_LIMITS.minZoom, VIEW_LIMITS.maxZoom, 0.05]
       },
       resetSettings: { type: 'action', label: 'Reset Settings' },
       resetView: { type: 'action', label: 'Reset View' },
