@@ -10,7 +10,7 @@ const defaultSettings = {
   "contrast": 0,
   "spread": 0,
   "shape": "Circle",
-  "pageBackground": "#070707",
+  "pageBackground": "#f2f1e8",
   "paperColor": "#FFFFFF",
   "inkColor": "#000000",
   "colorMode": false,

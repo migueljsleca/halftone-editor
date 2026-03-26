@@ -12,7 +12,7 @@ const DEFAULT_SETTINGS = {
   spread: 0,
   shape: 'Circle',
   preset: 'Classic',
-  pageBackground: '#070707',
+  pageBackground: '#f2f1e8',
   paperColor: '#f2f1e8',
   inkColor: '#2b2b2b',
   colorMode: false,
